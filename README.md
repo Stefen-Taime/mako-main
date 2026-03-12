@@ -464,4 +464,4 @@ MIT
 
 ---
 
-*Built by [Stefen Taime](https://github.com/Stefen-Taime)*
+*Built by [mcsEdition](https://mcsedition.org/fr)*
