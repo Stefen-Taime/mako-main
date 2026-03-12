@@ -1,0 +1,45 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: Restaurant API (API Key) -> PostgreSQL
+# Source: Local FastAPI — API Key authentication
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: restaurant-apikey-to-postgres
+  description: "Fetch restaurant data from local API with API Key auth and load to PostgreSQL"
+  owner: data-team
+
+  source:
+    type: http
+    config:
+      url: http://localhost:8000/restaurant/apikey/
+      method: GET
+      auth_type: api_key
+      api_key_header: X-API-Key
+      api_key_value: my-api-key-456
+      response_type: json
+      data_path: data
+      pagination_type: offset
+      pagination_limit_param: limit
+      pagination_limit: 100
+      pagination_offset_param: skip
+      pagination_total_path: total
+      rate_limit_rps: 10
+      timeout: 30s
+
+  sink:
+    type: postgres
+    database: mako
+    schema: public
+    table: restaurant_apikey
+    flatten: true
+    batch:
+      size: 200
+      interval: 5s
+
+  monitoring:
+    freshnessSLA: 5m
+    metrics:
+      enabled: true
+      port: 9090

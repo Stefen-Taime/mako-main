@@ -1,0 +1,89 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: NYC TLC Yellow Taxi -> GCS (Parquet)
+# Source: HTTP Parquet file (NYC TLC public dataset)
+# Sink: GCS bucket in Parquet format
+#
+# Data Quality Shield:
+#   - dq_check transform validates every row before GCS write
+#   - on_failure: drop  -> corrupted rows never reach GCS
+#   - Checks: not_null on key fields, range on distance/fare
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: tlc-yellow-to-gcs-raw
+  description: "Ingest NYC TLC Yellow Taxi trip data (Parquet) into GCS with row-level quality checks"
+  owner: data-team
+  labels:
+    domain: transportation
+    dataset: nyc-tlc
+    taxi_type: yellow
+
+  source:
+    type: file
+    config:
+      path: https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
+      format: parquet
+      channel_buffer: 20000
+
+  transforms:
+    # --- DATA QUALITY SHIELD ---
+    # Row-level checks: reject bad data before it reaches GCS
+    - name: quality-gate
+      type: dq_check
+      on_failure: drop
+      checks:
+        - column: VendorID
+          rule: not_null
+        - column: tpep_pickup_datetime
+          rule: not_null
+        - column: trip_distance
+          rule: range
+          min: 0
+        - column: total_amount
+          rule: range
+          min: 0
+        - column: passenger_count
+          rule: range
+          min: 0
+          max: 9
+
+    # Enrich with computed fields for downstream analytics
+    - name: enrich-fare-category
+      type: sql
+      query: "SELECT *, CASE WHEN total_amount > '50' THEN 'premium' WHEN total_amount > '20' THEN 'standard' ELSE 'economy' END as fare_category FROM events"
+
+  sink:
+    type: gcs
+    bucket: mako-pipeline-data
+    prefix: raw/nyc_tlc/yellow/2024/01
+    format: parquet
+    config:
+      project: uber-324807
+      compression: snappy
+    batch:
+      size: 5000
+      interval: 10s
+
+  # Schema enforcement disabled — dq_check transform handles row-level validation
+  # Enable with a schema registry when available:
+  # schema:
+  #   enforce: true
+  #   registry: http://localhost:8081
+  #   subject: nyc-tlc-yellow-value
+  #   onFailure: reject
+
+  # isolation:
+  #   strategy: dedicated
+  #   maxRetries: 3
+  #   backoffMs: 2000
+
+  monitoring:
+    freshnessSLA: 10m
+    alertOnError: true
+    alertOnSLA: true
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090

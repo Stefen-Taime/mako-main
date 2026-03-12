@@ -1,0 +1,18 @@
+# Prometheus configuration for Mako pipelines
+# Scrapes metrics from mako-runner instances on the host machine.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: mako-pipelines
+    # host.docker.internal resolves to the host machine from inside Docker.
+    # All pipelines (standalone and workflow) expose metrics on a single port.
+    # Workflows use a shared MetricsRegistry so every pipeline's counters
+    # appear on :9090/metrics with a pipeline="" label.
+    static_configs:
+      - targets:
+          - host.docker.internal:9090
+        labels:
+          env: local

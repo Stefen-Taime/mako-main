@@ -1,0 +1,47 @@
+# ════════════════════════════════════════════════════════════
+# Dimension: dim_rate_code (6 rows - static reference data)
+# Target: Snowflake ANALYTICS.DW.DIM_RATE_CODE
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: dim-rate-code
+  description: "Build rate code dimension table in Snowflake"
+  owner: data-team
+  labels:
+    domain: transportation
+    stage: dimension
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      query: >
+        SELECT 1 AS rate_code_id, 'Standard rate' AS rate_code_name
+        UNION ALL SELECT 2, 'JFK'
+        UNION ALL SELECT 3, 'Newark'
+        UNION ALL SELECT 4, 'Nassau/Westchester'
+        UNION ALL SELECT 5, 'Negotiated fare'
+        UNION ALL SELECT 99, 'Group ride'
+
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: DW
+    table: DIM_RATE_CODE
+    flatten: true
+    config:
+      vault_path: secret/data/mako/snowflake
+    batch:
+      size: 100
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9090

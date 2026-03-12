@@ -1,0 +1,12 @@
+bin/
+/mako
+.iguazu/
+.claude/
+.DS_Store
+*.exe
+*.test
+*.out
+*.wasm
+coverage.txt
+dist/
+target/

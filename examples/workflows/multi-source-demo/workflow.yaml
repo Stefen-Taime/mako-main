@@ -1,0 +1,38 @@
+# ════════════════════════════════════════════════════════════
+# Workflow: Multi-Sink Data Ingestion Pipeline
+# ════════════════════════════════════════════════════════════
+#
+# DAG structure:
+#
+#   ingest-users (HTTP → DuckDB/Parquet)
+#         │
+#         ▼
+#   users-to-postgres (DuckDB/Parquet → PostgreSQL)
+#
+#   ingest-restaurants (CSV → DuckDB/Parquet)   ← runs in parallel with step 1
+#
+# Sources used:  HTTP, DuckDB, File (CSV)
+# Sinks used:    DuckDB (+Parquet export), PostgreSQL
+#
+apiVersion: mako/v1
+kind: Workflow
+
+workflow:
+  name: multi-sink-ingest
+  description: "Ingest data through multiple sources and sinks: HTTP→DuckDB→Postgres + CSV→DuckDB"
+  owner: data-team
+  onFailure: stop
+
+  steps:
+    # Step 1: HTTP source → DuckDB + Parquet export (runs in parallel with step 3)
+    - name: ingest-users
+      pipeline: pipeline-users.yaml
+
+    # Step 2: DuckDB/Parquet source → PostgreSQL (waits for step 1)
+    - name: users-to-postgres
+      pipeline: pipeline-users-to-postgres.yaml
+      depends_on: [ingest-users]
+
+    # Step 3: CSV file source → DuckDB + Parquet export (independent, parallel with step 1)
+    - name: ingest-restaurants
+      pipeline: pipeline-restaurants.yaml

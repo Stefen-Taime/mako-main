@@ -1,0 +1,82 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: GCS (Parquet) -> DuckDB Analytics
+# Source: DuckDB with read_parquet() on GCS path (via httpfs)
+# Sink: DuckDB local file with aggregated daily summary
+#
+# This pipeline reads cleaned TLC data from GCS and produces
+# a daily_taxi_summary table with revenue + trip metrics.
+# DuckDB's httpfs extension handles GCS access natively.
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: gcs-to-duckdb-tlc-analytics
+  description: "Read cleaned NYC TLC data from GCS Parquet and aggregate into DuckDB analytics table"
+  owner: data-team
+  labels:
+    domain: transportation
+    dataset: nyc-tlc
+    stage: analytics
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      # To read directly from GCS, set GOOGLE_APPLICATION_CREDENTIALS
+      # and use: read_parquet('gs://mako-pipeline-data/raw/nyc_tlc/yellow/**/*.parquet')
+      query: >
+        SELECT
+          tpep_pickup_datetime as trip_date,
+          VendorID as vendor_id,
+          trip_distance,
+          total_amount,
+          passenger_count,
+          congestion_surcharge
+        FROM read_parquet('/tmp/nyc_tlc_parquet/*.parquet', union_by_name=True)
+      batch_size: 10000
+
+  transforms:
+    # Build aggregation via SQL transform
+    - name: daily-summary
+      type: sql
+      query: "SELECT *, CASE WHEN trip_distance > '20' THEN 'long_haul' WHEN trip_distance > '5' THEN 'medium' ELSE 'short' END as trip_category FROM events"
+
+    # Post-load data quality: reject anomalous rows
+    - name: post-quality-check
+      type: dq_check
+      on_failure: tag
+      checks:
+        - column: trip_distance
+          rule: range
+          min: 0
+          max: 500
+        - column: total_amount
+          rule: range
+          min: -50
+          max: 10000
+        - column: passenger_count
+          rule: range
+          min: 0
+          max: 9
+
+  sink:
+    type: duckdb
+    database: /tmp/nyc_tlc_analytics.duckdb
+    table: taxi_trips_enriched
+    config:
+      create_table: true
+      export_path: /tmp/nyc_tlc_export/
+      export_format: parquet
+      export_partition_by: [trip_category]
+    batch:
+      size: 5000
+      interval: 10s
+
+  monitoring:
+    freshnessSLA: 15m
+    alertOnError: true
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9091

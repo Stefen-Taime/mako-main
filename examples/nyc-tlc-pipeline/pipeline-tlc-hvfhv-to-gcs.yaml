@@ -1,0 +1,73 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: NYC TLC High Volume FHV (Uber/Lyft) -> GCS
+# EXTRACT: Download raw HVFHV Parquet from NYC TLC.
+#
+# HVFHV data includes trip_miles, trip_time, fares,
+# tips, driver_pay, and shared ride flags.
+#
+# Vault secrets:
+#   - GCS: secret/data/mako/gcs (bucket, project)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: tlc-hvfhv-to-gcs-raw
+  description: "Ingest NYC TLC High Volume FHV (Uber/Lyft) trip data into GCS"
+  owner: data-team
+  labels:
+    domain: transportation
+    dataset: nyc-tlc
+    taxi_type: hvfhv
+    stage: extract
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: file
+    config:
+      path: https://d37ci6vzurychx.cloudfront.net/trip-data/fhvhv_tripdata_2024-01.parquet
+      format: parquet
+      channel_buffer: 20000
+
+  transforms:
+    - name: quality-gate
+      type: dq_check
+      on_failure: drop
+      checks:
+        - column: hvfhs_license_num
+          rule: not_null
+        - column: pickup_datetime
+          rule: not_null
+        - column: trip_miles
+          rule: range
+          min: 0
+        - column: base_passenger_fare
+          rule: range
+          min: 0
+
+    - name: enrich-fare-category
+      type: sql
+      query: "SELECT *, CASE WHEN base_passenger_fare > '50' THEN 'premium' WHEN base_passenger_fare > '20' THEN 'standard' ELSE 'economy' END as fare_category FROM events"
+
+  sink:
+    type: gcs
+    bucket: mako-pipeline-data
+    prefix: raw/nyc_tlc/hvfhv/2024/01
+    format: parquet
+    config:
+      vault_path: secret/data/mako/gcs
+      compression: snappy
+    batch:
+      size: 5000
+      interval: 10s
+
+  monitoring:
+    freshnessSLA: 15m
+    alertOnError: true
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090

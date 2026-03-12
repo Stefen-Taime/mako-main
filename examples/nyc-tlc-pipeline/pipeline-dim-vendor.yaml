@@ -1,0 +1,44 @@
+# ════════════════════════════════════════════════════════════
+# Dimension: dim_vendor (3 rows - static reference data)
+# Target: Snowflake ANALYTICS.DW.DIM_VENDOR
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: dim-vendor
+  description: "Build vendor dimension table in Snowflake"
+  owner: data-team
+  labels:
+    domain: transportation
+    stage: dimension
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      query: >
+        SELECT 1 AS vendor_id, 'Creative Mobile Technologies' AS vendor_name
+        UNION ALL SELECT 2, 'VeriFone Inc.'
+        UNION ALL SELECT 6, 'Myle Technologies'
+
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: DW
+    table: DIM_VENDOR
+    flatten: true
+    config:
+      vault_path: secret/data/mako/snowflake
+    batch:
+      size: 100
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9090

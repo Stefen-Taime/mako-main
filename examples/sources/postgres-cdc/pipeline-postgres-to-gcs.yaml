@@ -1,0 +1,44 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: PostgreSQL -> GCS (Parquet)
+# Source: PostgreSQL CDC (snapshot mode) — beer_wasm_rust table
+# Sink: GCS bucket in Parquet format with Snappy compression
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: postgres-to-gcs-parquet
+  description: "Snapshot beer_wasm_rust from PostgreSQL and write to GCS as Parquet"
+  owner: data-team
+
+  source:
+    type: postgres_cdc
+    config:
+      host: localhost
+      port: "5432"
+      user: mako
+      password: mako
+      database: mako
+      schema: public
+      tables: [beer_wasm_rust]
+      mode: snapshot
+      snapshot_batch_size: 500
+      snapshot_order_by: loaded_at
+
+  sink:
+    type: gcs
+    bucket: mako-pipeline-data
+    prefix: raw/beer
+    format: parquet
+    config:
+      project: uber-324807
+      compression: snappy
+    batch:
+      size: 500
+      interval: 10s
+
+  monitoring:
+    freshnessSLA: 5m
+    metrics:
+      enabled: true
+      port: 9090

@@ -1,0 +1,35 @@
+# ════════════════════════════════════════════════════════════
+# Dimension: dim_payment_type (4 rows — static reference data)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: dim-payment-type
+  description: "Build payment type dimension table"
+  owner: data-team
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      query: >
+        SELECT 1 AS payment_type_id, 'Credit card' AS payment_type_name
+        UNION ALL SELECT 2, 'Cash'
+        UNION ALL SELECT 3, 'No charge'
+        UNION ALL SELECT 4, 'Dispute'
+
+  sink:
+    type: duckdb
+    database: /tmp/nyc_tlc_warehouse.duckdb
+    table: dim_payment_type
+    config:
+      create_table: true
+    batch:
+      size: 100
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9111

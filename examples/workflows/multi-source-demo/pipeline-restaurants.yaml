@@ -1,0 +1,38 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline 3: Restaurants (CSV) → DuckDB + Parquet
+# Source: File (CSV from GitHub)
+# Sink:   DuckDB → exports to local Parquet (simulates GCS/S3 staging)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: restaurants-to-duckdb
+  description: "Ingest restaurant reviews from CSV, clean and export to Parquet"
+  owner: data-team
+
+  source:
+    type: file
+    config:
+      path: https://raw.githubusercontent.com/Stefen-Taime/open-source-data/main/restaurant/csv/csv_bank_20240116_1.csv
+      format: csv
+      csv_header: true
+
+  transforms:
+    - name: drop_ids
+      type: drop_fields
+      fields: [uid]
+
+  sink:
+    type: duckdb
+    database: /tmp/mako-workflow/restaurants.duckdb
+    table: restaurants
+    config:
+      create_table: true
+      export_path: /tmp/mako-workflow/restaurants.parquet
+      export_format: parquet
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9102

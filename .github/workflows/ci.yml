@@ -1,0 +1,285 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ════════════════════════════════════════════
+  # Unit tests + build (fast, no Docker)
+  # ════════════════════════════════════════════
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Test
+        run: go test -v -race ./...
+
+      - name: Benchmark
+        run: go test -bench=. -benchmem ./...
+
+      - name: Build
+        run: go build -o bin/mako .
+
+      - name: Validate examples
+        run: |
+          ./bin/mako validate examples/sources/kafka/pipeline-order-events.yaml
+          ./bin/mako validate examples/sources/kafka/pipeline-payment-features.yaml
+
+      - name: Dry-run with fixtures
+        run: cat test/fixtures/events.jsonl | ./bin/mako dry-run examples/sources/kafka/pipeline-order-events.yaml
+
+  # ════════════════════════════════════════════
+  # Integration tests (Kafka + PostgreSQL + Schema Registry)
+  # ════════════════════════════════════════════
+  integration:
+    runs-on: ubuntu-latest
+    needs: test
+
+    services:
+      kafka:
+        image: confluentinc/cp-kafka:7.6.0
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
+          KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,HOST://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_LOG_DIRS: /var/lib/kafka/data
+          CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+        options: >-
+          --health-cmd "kafka-broker-api-versions --bootstrap-server localhost:9092"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 15
+          --health-start-period 30s
+
+      postgres:
+        image: postgres:16-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: mako
+          POSTGRES_PASSWORD: mako
+          POSTGRES_DB: mako
+        options: >-
+          --health-cmd "pg_isready -U mako"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      schema-registry:
+        image: confluentinc/cp-schema-registry:7.6.0
+        ports:
+          - 8081:8081
+        env:
+          SCHEMA_REGISTRY_HOST_NAME: schema-registry
+          SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+          SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+        options: >-
+          --health-cmd "curl -f http://localhost:8081/ || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+          --health-start-period 30s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build mako
+        run: go build -o bin/mako .
+
+      - name: Init PostgreSQL schema
+        run: |
+          PGPASSWORD=mako psql -h localhost -U mako -d mako -f docker/postgres/init/001-schema.sql
+          PGPASSWORD=mako psql -h localhost -U mako -d mako -c "
+            CREATE TABLE IF NOT EXISTS analytics.pipeline_events (
+              event_key       VARCHAR(255),
+              event_data      JSONB NOT NULL,
+              event_timestamp TIMESTAMPTZ DEFAULT NOW(),
+              topic           VARCHAR(255),
+              partition        INTEGER,
+              \"offset\"       BIGINT
+            );
+          "
+
+      - name: Create Kafka topics
+        run: |
+          docker exec ${{ job.services.kafka.id }} \
+            kafka-topics --bootstrap-server localhost:9092 \
+            --create --topic events.ci-test --partitions 1 --replication-factor 1
+          docker exec ${{ job.services.kafka.id }} \
+            kafka-topics --bootstrap-server localhost:9092 \
+            --create --topic events.ci-test.dlq --partitions 1 --replication-factor 1
+
+      - name: Register JSON Schema
+        run: |
+          curl -s -X POST http://localhost:8081/subjects/events.ci-test-value/versions \
+            -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+            -d '{
+              "schemaType": "JSON",
+              "schema": "{\"type\":\"object\",\"required\":[\"email\",\"amount\",\"status\"],\"properties\":{\"email\":{\"type\":\"string\"},\"amount\":{\"type\":\"number\"},\"status\":{\"type\":\"string\"},\"environment\":{\"type\":\"string\"}}}"
+            }'
+
+      - name: Produce test messages to Kafka
+        run: |
+          for msg in \
+            '{"email":"alice@company.com","amount":100.50,"status":"completed","environment":"production"}' \
+            '{"email":"bob@company.com","amount":250.00,"status":"completed","environment":"production"}' \
+            '{"email":"charlie@company.com","amount":75.00,"status":"pending","environment":"production"}'
+          do
+            echo "$msg" | docker exec -i ${{ job.services.kafka.id }} \
+              kafka-console-producer --bootstrap-server localhost:9092 --topic events.ci-test
+          done
+          sleep 2
+
+      - name: Write integration pipeline YAML
+        run: |
+          cat > /tmp/ci-pipeline.yaml << 'EOF'
+          apiVersion: mako/v1
+          kind: Pipeline
+          pipeline:
+            name: ci-integration-test
+            owner: ci
+            source:
+              type: kafka
+              topic: events.ci-test
+              brokers: localhost:9092
+              startOffset: earliest
+            transforms:
+              - name: pii_hash
+                type: hash_fields
+                fields: [email]
+              - name: filter_prod
+                type: filter
+                condition: "environment = production"
+            sink:
+              type: postgres
+              database: mako
+              schema: analytics
+              table: pipeline_events
+              config:
+                host: localhost
+                port: "5432"
+                user: mako
+                password: mako
+            schema:
+              enforce: true
+              registry: http://localhost:8081
+              subject: events.ci-test-value
+              onFailure: reject
+            monitoring:
+              metrics:
+                enabled: true
+                port: 9090
+          EOF
+
+      - name: Validate integration pipeline
+        run: ./bin/mako validate /tmp/ci-pipeline.yaml
+
+      - name: Run pipeline (10s timeout)
+        run: |
+          timeout 10 ./bin/mako run /tmp/ci-pipeline.yaml 2>&1 || true
+          sleep 2
+
+      - name: Verify PostgreSQL sink results
+        run: |
+          RESULT=$(PGPASSWORD=mako psql -h localhost -U mako -d mako -t -c \
+            "SELECT COUNT(*) FROM analytics.pipeline_events;")
+          COUNT=$(echo "$RESULT" | tr -d ' ')
+          echo "Events in PostgreSQL: $COUNT"
+          if [ "$COUNT" -lt 1 ]; then
+            echo "FAIL: Expected at least 1 event in PostgreSQL"
+            PGPASSWORD=mako psql -h localhost -U mako -d mako -c \
+              "SELECT * FROM analytics.pipeline_events;"
+            exit 1
+          fi
+          echo "PASS: $COUNT events found in PostgreSQL"
+
+      - name: Verify /metrics endpoint format
+        run: |
+          # Start pipeline briefly to test HTTP endpoints
+          timeout 5 ./bin/mako run /tmp/ci-pipeline.yaml 2>&1 &
+          PID=$!
+          sleep 3
+          echo "--- /health ---"
+          curl -sf http://localhost:9090/health | python3 -m json.tool
+          echo "--- /ready ---"
+          curl -sf http://localhost:9090/ready | python3 -m json.tool
+          echo "--- /metrics ---"
+          curl -sf http://localhost:9090/metrics | head -20
+          echo "--- /status ---"
+          curl -sf http://localhost:9090/status | python3 -m json.tool
+          kill $PID 2>/dev/null || true
+          echo "PASS: All HTTP endpoints responding"
+
+      - name: Test file source
+        run: |
+          # Create test JSONL file
+          cat > /tmp/test-events.jsonl << 'EOF'
+          {"email":"test1@test.com","amount":10,"status":"completed","environment":"production"}
+          {"email":"test2@test.com","amount":20,"status":"completed","environment":"production"}
+          {"email":"test3@test.com","amount":30,"status":"pending","environment":"staging"}
+          EOF
+
+          # Create file source pipeline
+          cat > /tmp/ci-file-pipeline.yaml << 'EOF'
+          apiVersion: mako/v1
+          kind: Pipeline
+          pipeline:
+            name: ci-file-test
+            owner: ci
+            source:
+              type: file
+              config:
+                path: /tmp/test-events.jsonl
+                format: jsonl
+            transforms:
+              - name: filter_prod
+                type: filter
+                condition: "environment = production"
+            sink:
+              type: stdout
+          EOF
+
+          ./bin/mako validate /tmp/ci-file-pipeline.yaml
+          echo "PASS: File source pipeline validated"
+
+  # ════════════════════════════════════════════
+  # Release (on tags only)
+  # ════════════════════════════════════════════
+  release:
+    needs: [test, integration]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - uses: goreleaser/goreleaser-action@v5
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

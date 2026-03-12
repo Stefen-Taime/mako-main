@@ -1,0 +1,177 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: Multi-Source Join — HTTP APIs + PostgreSQL → GCS
+#
+# Fetches data from 3 HTTP APIs (beer, restaurant, movies)
+# with different auth methods, joins with existing PostgreSQL
+# tables on user_id, then writes enriched results to GCS as
+# Parquet and to a Kafka topic.
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: multi-source-enrichment
+  description: "Join HTTP APIs (beer, restaurant, movies) with PostgreSQL data and export to GCS"
+  owner: data-team
+  labels:
+    domain: enrichment
+    tier: standard
+
+  sources:
+    # Source 1: Beer API — no auth
+    - name: beers
+      type: http
+      config:
+        url: http://localhost:8000/beer/
+        method: GET
+        auth_type: none
+        response_type: json
+        data_path: data
+        pagination_type: offset
+        pagination_limit_param: limit
+        pagination_limit: 100
+        pagination_offset_param: skip
+        pagination_total_path: total
+        rate_limit_rps: 10
+        timeout: 30s
+
+    # Source 2: Restaurant API — Bearer token auth
+    - name: restaurants
+      type: http
+      config:
+        url: http://localhost:8000/restaurant/bearer/
+        method: GET
+        auth_type: bearer
+        auth_token: super-secret-token-123
+        response_type: json
+        data_path: data
+        pagination_type: offset
+        pagination_limit_param: limit
+        pagination_limit: 100
+        pagination_offset_param: skip
+        pagination_total_path: total
+        rate_limit_rps: 10
+        timeout: 30s
+
+    # Source 3: Movies API — OAuth2 client credentials
+    - name: movies
+      type: http
+      config:
+        url: http://localhost:8000/movies/
+        method: GET
+        auth_type: oauth2
+        oauth2_token_url: http://localhost:8000/oauth2/token
+        oauth2_client_id: my-client-id
+        oauth2_client_secret: my-client-secret
+        oauth2_content_type: json
+        response_type: json
+        data_path: data
+        pagination_type: offset
+        pagination_limit_param: limit
+        pagination_limit: 100
+        pagination_offset_param: skip
+        pagination_total_path: total
+        rate_limit_rps: 10
+        timeout: 30s
+
+    # Source 4: PostgreSQL — existing user data
+    - name: pg-users
+      type: postgres_cdc
+      config:
+        host: localhost
+        port: "5432"
+        user: mako
+        password: mako
+        database: mako
+        schema: public
+        tables: [beer, restaurant_bearer, movies_oauth2]
+        mode: snapshot
+        snapshot_batch_size: 500
+
+  join:
+    type: left
+    on: "beers.user_id = restaurants.user_id = movies.user_id = pg-users.user_id"
+    window: 5m
+
+  transforms:
+    # Drop internal timestamps
+    - name: drop_internal
+      type: drop_fields
+      fields: [dt_current_timestamp, loaded_at]
+
+    # Rename for warehouse convention
+    - name: standardize
+      type: rename_fields
+      mapping:
+        name: beer_name
+        title: movie_title
+
+    # Enrich with SQL
+    - name: enrich
+      type: sql
+      query: >
+        SELECT *,
+          CASE WHEN vote_average >= 7 THEN 'high'
+               WHEN vote_average >= 5 THEN 'medium'
+               ELSE 'low'
+          END as movie_rating_tier
+        FROM events
+
+  # Primary sink: GCS as Parquet
+  sink:
+    type: gcs
+    bucket: ${GCS_BUCKET:-mako-pipeline-data}
+    prefix: enriched/multi-source/
+    format: parquet
+    config:
+      project: ${GCP_PROJECT:-uber-324807}
+      compression: snappy
+    batch:
+      size: 1000
+      interval: 30s
+
+  # Secondary sink: Kafka for downstream consumers
+  sinks:
+    - name: kafka-enriched
+      type: kafka
+      topic: enriched-events
+      config:
+        brokers: ${KAFKA_BROKERS:-localhost:9092}
+      batch:
+        size: 500
+        interval: 10s
+
+  schema:
+    enforce: true
+    registry: ${SCHEMA_REGISTRY:-http://localhost:8081}
+    subject: enriched-events-value
+    compatibility: BACKWARD
+    onFailure: dlq
+    dlqTopic: enriched-events.dlq
+
+  isolation:
+    strategy: dedicated
+    maxRetries: 3
+    backoffMs: 1000
+    dlqEnabled: true
+
+  monitoring:
+    freshnessSLA: 5m
+    alertChannel: "#data-alerts"
+    slackWebhookURL: ${SLACK_WEBHOOK_URL}
+    alertOnError: true
+    alertOnSLA: true
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090
+    alerts:
+      - name: join_latency
+        type: latency
+        threshold: 60s
+        severity: warning
+      - name: high_error_rate
+        type: error_rate
+        threshold: "1%"
+        severity: critical
+        channel: "#data-incidents"

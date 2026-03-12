@@ -1,0 +1,5 @@
+{"event_id": "evt-001", "event_type": "order.created", "email": "john@example.com", "phone": "+15551234567", "amount": 99.99, "status": "completed", "customer_id": "cust-123", "environment": "production"}
+{"event_id": "evt-002", "event_type": "order.created", "email": "jane@example.com", "phone": "+15559876543", "amount": 249.99, "status": "completed", "customer_id": "cust-456", "environment": "production"}
+{"event_id": "evt-003", "event_type": "order.created", "email": "test@test.com", "phone": "+15550000000", "amount": 1.00, "status": "test", "customer_id": "cust-test", "environment": "staging"}
+{"event_id": "evt-004", "event_type": "payment.processed", "email": "john@example.com", "phone": "+15551234567", "credit_card_number": "4111222233334444", "amount": 150.00, "risk_score": 0.2, "customer_id": "cust-123"}
+{"event_id": "evt-005", "event_type": "payment.processed", "email": "alice@example.com", "phone": "+15551111111", "credit_card_number": "5200828282828210", "amount": 50.00, "risk_score": 0.9, "customer_id": "cust-789"}

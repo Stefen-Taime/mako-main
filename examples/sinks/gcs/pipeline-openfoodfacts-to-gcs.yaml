@@ -1,0 +1,32 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: OpenFoodFacts → GCS (CSV)
+# Source: HTTP URL (gzip-compressed CSV, streaming decompression)
+# Sink: GCS bucket as CSV files
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: openfoodfacts-to-gcs
+  description: "Stream OpenFoodFacts product catalog (CSV.gz) to GCS as CSV"
+  owner: data-team
+
+  source:
+    type: file
+    config:
+      path: https://static.openfoodfacts.org/data/en.openfoodfacts.org.products.csv.gz
+      format: csv
+      csv_header: true
+      csv_delimiter: "\t"
+      channel_buffer: 20000
+
+  sink:
+    type: gcs
+    bucket: mako-pipeline-data
+    prefix: raw/openfoodfacts
+    format: csv
+    config:
+      project: uber-324807
+    batch:
+      size: 5000
+      interval: 10s

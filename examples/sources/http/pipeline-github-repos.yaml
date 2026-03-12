@@ -1,0 +1,53 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: GitHub API (Bearer Auth) -> PostgreSQL
+# Source: GitHub Search API — top starred Go repos
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: github-repos-to-postgres
+  description: "Fetch top Go repositories from GitHub API with Bearer auth and load to PostgreSQL"
+  owner: data-team
+
+  source:
+    type: http
+    config:
+      url: https://api.github.com/search/repositories?q=language:go&sort=stars&order=desc
+      method: GET
+      auth_type: bearer
+      auth_token: ${GITHUB_TOKEN}
+      response_type: json
+      data_path: items
+      pagination_type: page
+      pagination_page_param: page
+      pagination_limit_param: per_page
+      pagination_limit: 30
+      pagination_total_path: total_count
+      rate_limit_rps: 5
+      timeout: 30s
+      max_retries: 3
+      headers:
+        Accept: application/vnd.github+json
+        X-GitHub-Api-Version: "2022-11-28"
+
+  transforms:
+    - name: drop_heavy
+      type: drop_fields
+      fields: [owner, permissions, license, organization, security_and_analysis, source, template_repository]
+
+  sink:
+    type: postgres
+    database: mako
+    schema: public
+    table: github_repos
+    flatten: true
+    batch:
+      size: 100
+      interval: 5s
+
+  monitoring:
+    freshnessSLA: 5m
+    metrics:
+      enabled: true
+      port: 9090

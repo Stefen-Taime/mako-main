@@ -1,0 +1,45 @@
+# ════════════════════════════════════════════════════════════
+# Dimension: dim_payment_type (4 rows - static reference data)
+# Target: Snowflake ANALYTICS.DW.DIM_PAYMENT_TYPE
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: dim-payment-type
+  description: "Build payment type dimension table in Snowflake"
+  owner: data-team
+  labels:
+    domain: transportation
+    stage: dimension
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      query: >
+        SELECT 1 AS payment_type_id, 'Credit card' AS payment_type_name
+        UNION ALL SELECT 2, 'Cash'
+        UNION ALL SELECT 3, 'No charge'
+        UNION ALL SELECT 4, 'Dispute'
+
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: DW
+    table: DIM_PAYMENT_TYPE
+    flatten: true
+    config:
+      vault_path: secret/data/mako/snowflake
+    batch:
+      size: 100
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9090

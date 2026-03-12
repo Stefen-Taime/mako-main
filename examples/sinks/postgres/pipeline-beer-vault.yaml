@@ -1,0 +1,77 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: Beer API -> PostgreSQL (secrets from Vault)
+# Credentials resolved from HashiCorp Vault instead of env vars
+#
+# Works with both local Vault (docker) and remote Vault (cloud):
+#
+#   Local (dev):
+#     export VAULT_ADDR=http://localhost:8200
+#     export VAULT_TOKEN=mako-root-token
+#
+#   HCP Vault (cloud):
+#     export VAULT_ADDR=https://my-vault.hashicorp.cloud:8200
+#     export VAULT_TOKEN=hvs.XXXXX
+#     export VAULT_NAMESPACE=admin
+#
+#   AppRole (production):
+#     export VAULT_ADDR=https://vault.internal:8200
+#     export VAULT_ROLE_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+#     export VAULT_SECRET_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+#
+#   Kubernetes (in-cluster):
+#     export VAULT_ADDR=http://vault.vault.svc:8200
+#     export VAULT_K8S_ROLE=mako-pipeline
+#
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: beer-vault
+  description: "Beer data with credentials from Vault"
+  owner: data-team
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: http
+    config:
+      url: http://localhost:8000/beer/
+      method: GET
+      auth_type: none
+      response_type: json
+      data_path: data
+      pagination_type: offset
+      pagination_limit_param: limit
+      pagination_limit: 100
+      pagination_offset_param: skip
+      pagination_total_path: total
+      rate_limit_rps: 10
+      timeout: 30s
+
+  sink:
+    type: postgres
+    database: mako
+    schema: public
+    table: beer_vault
+    flatten: true
+    config:
+      # No host/port/user/password here — resolved from Vault automatically
+      vault_path: secret/data/mako/postgres
+    batch:
+      size: 200
+      interval: 5s
+
+  monitoring:
+    freshnessSLA: 5m
+    alertChannel: "#data-alerts"
+    # Slack webhook resolved from env var — Vault support for alerting
+    # is not yet wired (Vault only resolves sink configs today).
+    # To use: export SLACK_WEBHOOK_URL=$(vault kv get -field=webhook_url secret/mako/slack)
+    slackWebhookURL: ${SLACK_WEBHOOK_URL}
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090

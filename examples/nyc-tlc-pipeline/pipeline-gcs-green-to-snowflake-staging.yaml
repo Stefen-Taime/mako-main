@@ -1,0 +1,103 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: GCS Green Taxi (Parquet) -> Snowflake Staging
+# LOAD: Read Green Taxi data from GCS and load into
+#       Snowflake staging table (STG_GREEN_TRIPS).
+#
+# Green uses lpep_ prefix and has ehail_fee, trip_type.
+#
+# Vault secrets:
+#   - Snowflake: secret/data/mako/snowflake
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: gcs-green-to-snowflake-staging
+  description: "Load NYC TLC Green Taxi data from GCS Parquet into Snowflake staging table"
+  owner: data-team
+  labels:
+    domain: transportation
+    dataset: nyc-tlc
+    taxi_type: green
+    stage: staging
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      vault_path: secret/data/mako/gcs
+      query: >
+        SELECT
+          CAST(VendorID AS INTEGER)                          AS vendor_id,
+          lpep_pickup_datetime                               AS pickup_datetime,
+          lpep_dropoff_datetime                              AS dropoff_datetime,
+          CAST(COALESCE(passenger_count, 1) AS INTEGER)      AS passenger_count,
+          ROUND(trip_distance, 2)                            AS trip_distance,
+          CAST(COALESCE(RatecodeID, 1) AS INTEGER)           AS rate_code_id,
+          store_and_fwd_flag                                 AS store_and_fwd_flag,
+          CAST(PULocationID AS INTEGER)                      AS pu_location_id,
+          CAST(DOLocationID AS INTEGER)                      AS do_location_id,
+          CAST(COALESCE(payment_type, 1) AS INTEGER)         AS payment_type,
+          ROUND(fare_amount, 2)                              AS fare_amount,
+          ROUND(COALESCE(extra, 0), 2)                       AS extra,
+          ROUND(COALESCE(mta_tax, 0), 2)                     AS mta_tax,
+          ROUND(COALESCE(tip_amount, 0), 2)                  AS tip_amount,
+          ROUND(COALESCE(tolls_amount, 0), 2)                AS tolls_amount,
+          ROUND(COALESCE(improvement_surcharge, 0), 2)       AS improvement_surcharge,
+          ROUND(total_amount, 2)                             AS total_amount,
+          ROUND(COALESCE(congestion_surcharge, 0), 2)        AS congestion_surcharge,
+          0.00                                               AS ehail_fee,
+          CAST(COALESCE(trip_type, 1) AS INTEGER)            AS trip_type,
+          0.00                                               AS airport_fee,
+          0.00                                               AS cbd_congestion_fee,
+          'green'                                            AS taxi_type,
+          fare_category
+        FROM read_parquet('gs://mako-pipeline-data/raw/nyc_tlc/green/2024/01/**/*.parquet', union_by_name=True)
+        WHERE lpep_pickup_datetime IS NOT NULL
+          AND lpep_dropoff_datetime IS NOT NULL
+          AND total_amount >= 0
+          AND trip_distance >= 0
+        LIMIT 5000
+      batch_size: 2000
+
+  transforms:
+    - name: quality-check
+      type: dq_check
+      on_failure: drop
+      checks:
+        - column: vendor_id
+          rule: not_null
+        - column: pickup_datetime
+          rule: not_null
+        - column: total_amount
+          rule: range
+          min: 0
+          max: 10000
+        - column: trip_distance
+          rule: range
+          min: 0
+          max: 500
+
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: RAW
+    table: STG_GREEN_TRIPS
+    flatten: true
+    config:
+      vault_path: secret/data/mako/snowflake
+    batch:
+      size: 5000
+      interval: 10s
+
+  monitoring:
+    freshnessSLA: 15m
+    alertOnError: true
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090

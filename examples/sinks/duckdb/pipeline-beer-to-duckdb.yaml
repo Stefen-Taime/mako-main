@@ -1,0 +1,49 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: Beer API -> DuckDB
+# Source: HTTP (Beer API, no auth)
+# Sink: DuckDB local file with auto-table creation
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: beer-to-duckdb
+  description: "Load beer data from HTTP API into DuckDB"
+  owner: data-team
+
+  source:
+    type: http
+    config:
+      url: http://localhost:8000/beer/
+      method: GET
+      auth_type: none
+      response_type: json
+      data_path: data
+      pagination_type: offset
+      pagination_limit_param: limit
+      pagination_limit: 100
+      pagination_offset_param: skip
+      pagination_total_path: total
+      rate_limit_rps: 10
+      timeout: 30s
+
+  sink:
+    type: duckdb
+    database: /tmp/beer.duckdb
+    table: beer
+    config:
+      create_table: true
+    batch:
+      size: 200
+      interval: 5s
+
+  monitoring:
+    freshnessSLA: 5m
+    alertChannel: "#general"
+    slackWebhookURL: ${SLACK_WEBHOOK_URL}
+    alertOnError: true
+    alertOnSLA: true
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090

@@ -1,0 +1,42 @@
+# ════════════════════════════════════════════════════════════
+# Simple Pipeline — Order Events → Snowflake
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: order-events
+  description: "Process order events with PII masking and load to Snowflake"
+  owner: commerce-team
+
+  source:
+    type: kafka
+    topic: events.orders
+    brokers: ${KAFKA_BROKERS:-kafka:9092}
+    startOffset: latest
+
+  transforms:
+    - name: pii_mask
+      type: hash_fields
+      fields: [email, phone, credit_card_number]
+
+    - name: drop_internal
+      type: drop_fields
+      fields: [internal_trace_id, debug_payload]
+
+    - name: filter_production
+      type: filter
+      condition: "status != test"
+
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: RAW
+    table: ORDER_EVENTS
+    batch:
+      size: 1000
+      interval: 10s
+
+  monitoring:
+    freshnessSLA: 5m
+    alertChannel: "#commerce-data"

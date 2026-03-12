@@ -1,0 +1,106 @@
+# ════════════════════════════════════════════════════════════
+# Workflow: NYC TLC ETL Pipeline (GCS + Snowflake Star Schema)
+# ════════════════════════════════════════════════════════════
+#
+# DAG structure:
+#
+#   Steps 1a-1d: EXTRACT (parallel — Yellow, Green, FHV, HVFHV -> GCS)
+#     ├─ tlc-yellow-to-gcs
+#     ├─ tlc-green-to-gcs
+#     ├─ tlc-fhv-to-gcs
+#     └─ tlc-hvfhv-to-gcs
+#                │
+#                ▼
+#   Steps 2a-2c: STAGING (parallel — GCS -> Snowflake STG tables)
+#     ├─ gcs-yellow-to-staging  (depends: tlc-yellow-to-gcs)
+#     ├─ gcs-green-to-staging   (depends: tlc-green-to-gcs)
+#     └─ gcs-hvfhv-to-staging   (depends: tlc-hvfhv-to-gcs)
+#                │
+#                ▼
+#   Steps 3-8: DIMENSIONS (parallel)
+#     ├─ dim-vendor       (static)
+#     ├─ dim-payment      (static)
+#     ├─ dim-rate-code    (static)
+#     ├─ dim-date         (generated)
+#     ├─ dim-time         (generated)
+#     └─ dim-location     (from NYC TLC Taxi Zone Lookup CSV)
+#                │
+#                ▼
+#   Step 9: FACT TABLE (reads GCS yellow data, WASM anomaly detector)
+#                │
+#                ▼
+#   Step 10: AGGREGATION (reads GCS yellow data, daily summary)
+#
+# Secrets: Vault (secret/data/mako/snowflake, secret/data/mako/gcs)
+# Monitoring: Prometheus metrics on :9090 (shared registry)
+#
+apiVersion: mako/v1
+kind: Workflow
+
+workflow:
+  name: nyc-tlc-etl-pipeline
+  description: "End-to-end ETL: NYC TLC multi-source data from HTTP to GCS to Snowflake star schema"
+  owner: data-team
+  onFailure: stop
+
+  steps:
+    # ── Steps 1a-1d: EXTRACT ── HTTP Parquet -> GCS (parallel) ──
+    - name: tlc-yellow-to-gcs
+      pipeline: pipeline-tlc-to-gcs.yaml
+
+    - name: tlc-green-to-gcs
+      pipeline: pipeline-tlc-green-to-gcs.yaml
+
+    - name: tlc-fhv-to-gcs
+      pipeline: pipeline-tlc-fhv-to-gcs.yaml
+
+    - name: tlc-hvfhv-to-gcs
+      pipeline: pipeline-tlc-hvfhv-to-gcs.yaml
+
+    # ── Steps 2a-2c: STAGING ── GCS -> Snowflake (parallel per source) ──
+    - name: gcs-yellow-to-staging
+      pipeline: pipeline-gcs-to-snowflake-staging.yaml
+      depends_on: [tlc-yellow-to-gcs]
+
+    - name: gcs-green-to-staging
+      pipeline: pipeline-gcs-green-to-snowflake-staging.yaml
+      depends_on: [tlc-green-to-gcs]
+
+    - name: gcs-hvfhv-to-staging
+      pipeline: pipeline-gcs-hvfhv-to-snowflake-staging.yaml
+      depends_on: [tlc-hvfhv-to-gcs]
+
+    # ── Steps 3-8: DIMENSIONS (parallel, no data dependency between them) ──
+    - name: dim-vendor
+      pipeline: pipeline-dim-vendor.yaml
+      depends_on: [gcs-yellow-to-staging]
+
+    - name: dim-payment
+      pipeline: pipeline-dim-payment.yaml
+      depends_on: [gcs-yellow-to-staging]
+
+    - name: dim-rate-code
+      pipeline: pipeline-dim-rate-code.yaml
+      depends_on: [gcs-yellow-to-staging]
+
+    - name: dim-date
+      pipeline: pipeline-dim-date.yaml
+      depends_on: [gcs-yellow-to-staging]
+
+    - name: dim-time
+      pipeline: pipeline-dim-time.yaml
+      depends_on: [gcs-yellow-to-staging]
+
+    - name: dim-location
+      pipeline: pipeline-dim-location.yaml
+      depends_on: [gcs-yellow-to-staging]
+
+    # ── Step 9: FACT TABLE (waits for all dimensions + all staging) ──
+    - name: fact-trips
+      pipeline: pipeline-fact-trips.yaml
+      depends_on: [dim-vendor, dim-payment, dim-rate-code, dim-date, dim-time, dim-location, gcs-green-to-staging, gcs-hvfhv-to-staging]
+
+    # ── Step 10: AGGREGATION (waits for fact table) ──
+    - name: agg-daily
+      pipeline: pipeline-agg-daily.yaml
+      depends_on: [fact-trips]

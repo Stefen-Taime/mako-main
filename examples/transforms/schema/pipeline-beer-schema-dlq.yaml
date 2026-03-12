@@ -1,0 +1,60 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: Beer API -> Schema Validation -> DLQ (Kafka)
+# Tests schema enforcement with DLQ routing — rejected events go to Kafka
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: beer-schema-dlq
+  description: "Beer data with strict schema — rejected events go to Kafka DLQ"
+  owner: data-team
+
+  source:
+    type: http
+    topic: beer-events
+    config:
+      url: http://localhost:8000/beer/
+      method: GET
+      auth_type: none
+      response_type: json
+      data_path: data
+      pagination_type: offset
+      pagination_limit_param: limit
+      pagination_limit: 100
+      pagination_offset_param: skip
+      pagination_total_path: total
+      rate_limit_rps: 10
+      timeout: 30s
+
+  schema:
+    enforce: true
+    registry: http://localhost:8081
+    subject: beer-strict-value
+    onFailure: dlq
+    dlqTopic: beer-events.dlq
+
+  isolation:
+    strategy: dedicated
+    maxRetries: 3
+    backoffMs: 1000
+    dlqEnabled: true
+
+  sink:
+    type: postgres
+    database: mako
+    schema: public
+    table: beer_schema_dlq
+    flatten: true
+    batch:
+      size: 200
+      interval: 5s
+
+  monitoring:
+    freshnessSLA: 5m
+    alertChannel: "#general"
+    slackWebhookURL: ${SLACK_WEBHOOK_URL}
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090

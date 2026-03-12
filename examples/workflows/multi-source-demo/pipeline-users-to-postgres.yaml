@@ -1,0 +1,37 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline 2: Users Parquet (DuckDB) → PostgreSQL
+# Source: DuckDB reads the Parquet file produced by pipeline 1
+# Sink:   PostgreSQL (flatten mode — typed columns)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: users-to-postgres
+  description: "Read users Parquet (from DuckDB export) and load into Postgres"
+  owner: data-team
+
+  vault:
+    ttl: 1h
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      query: "SELECT * FROM read_parquet('/tmp/mako-workflow/users.parquet')"
+
+  transforms: []
+
+  sink:
+    type: postgres
+    table: users_warehouse
+    schema: analytics
+    flatten: true
+    batch:
+      size: 500
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9101

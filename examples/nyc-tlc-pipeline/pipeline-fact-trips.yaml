@@ -1,0 +1,112 @@
+# ════════════════════════════════════════════════════════════
+# Fact Table: FACT_TRIPS (~700K rows)
+# Reads raw Parquet from GCS, computes measures + dimension
+# keys, writes to Snowflake ANALYTICS.DW.FACT_TRIPS
+#
+# Vault secrets:
+#   - Snowflake: secret/data/mako/snowflake
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: fact-trips
+  description: "Build fact_trips table with measures and dimension keys from GCS Parquet data"
+  owner: data-team
+  labels:
+    domain: transportation
+    stage: fact
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      vault_path: secret/data/mako/gcs
+      query: >
+        SELECT
+          ROW_NUMBER() OVER () AS trip_id,
+          CAST(STRFTIME(make_timestamp(tpep_pickup_datetime), '%Y%m%d') AS INTEGER)   AS pickup_date_key,
+          HOUR(make_timestamp(tpep_pickup_datetime))                                   AS pickup_time_key,
+          CAST(STRFTIME(make_timestamp(tpep_dropoff_datetime), '%Y%m%d') AS INTEGER)  AS dropoff_date_key,
+          CAST(PULocationID AS INTEGER)                   AS pickup_location_id,
+          CAST(DOLocationID AS INTEGER)                   AS dropoff_location_id,
+          CAST(VendorID AS INTEGER)                       AS vendor_id,
+          CAST(COALESCE(RatecodeID, 1) AS INTEGER)        AS rate_code_id,
+          CAST(COALESCE(payment_type, 1) AS INTEGER)      AS payment_type_id,
+          CAST(COALESCE(passenger_count, 1) AS INTEGER)   AS passenger_count,
+          ROUND(trip_distance, 2)                         AS trip_distance,
+          ROUND(fare_amount, 2)                           AS fare_amount,
+          ROUND(COALESCE(extra, 0), 2)                    AS extra,
+          ROUND(COALESCE(mta_tax, 0), 2)                  AS mta_tax,
+          ROUND(COALESCE(tip_amount, 0), 2)               AS tip_amount,
+          ROUND(COALESCE(tolls_amount, 0), 2)             AS tolls_amount,
+          ROUND(COALESCE(improvement_surcharge, 0), 2)    AS improvement_surcharge,
+          ROUND(COALESCE(congestion_surcharge, 0), 2)     AS congestion_surcharge,
+          ROUND(COALESCE(Airport_fee, 0), 2)              AS airport_fee,
+          0.00                                        AS cbd_congestion_fee,
+          ROUND(total_amount, 2)                          AS total_amount,
+          ROUND(total_amount - fare_amount, 2)            AS total_surcharges,
+          CASE WHEN trip_distance > 0
+               THEN ROUND(total_amount / trip_distance, 2)
+               ELSE 0 END                                 AS cost_per_mile,
+          ROUND((tpep_dropoff_datetime - tpep_pickup_datetime) / 60000000.0, 1) AS trip_duration_minutes,
+          CASE
+            WHEN trip_distance > 20 THEN 'long_haul'
+            WHEN trip_distance > 5  THEN 'medium'
+            ELSE 'short'
+          END AS trip_category
+        FROM read_parquet('gs://mako-pipeline-data/raw/nyc_tlc/yellow/2024/01/**/*.parquet', union_by_name=True)
+        WHERE tpep_pickup_datetime IS NOT NULL
+          AND tpep_dropoff_datetime IS NOT NULL
+          AND total_amount IS NOT NULL
+          AND trip_distance >= 0
+          AND total_amount >= 0
+        LIMIT 5000
+      batch_size: 10000
+
+  transforms:
+    - name: quality-check
+      type: dq_check
+      on_failure: drop
+      checks:
+        - column: trip_distance
+          rule: range
+          min: 0
+          max: 500
+        - column: total_amount
+          rule: range
+          min: 0
+          max: 10000
+        - column: trip_duration_minutes
+          rule: range
+          min: -5
+          max: 1440
+
+    - name: anomaly-detector
+      type: plugin
+      config:
+        path: ./examples/nyc-tlc-pipeline/wasm-anomaly/anomaly.wasm
+
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: DW
+    table: FACT_TRIPS
+    flatten: true
+    config:
+      vault_path: secret/data/mako/snowflake
+    batch:
+      size: 5000
+      interval: 10s
+
+  monitoring:
+    freshnessSLA: 15m
+    alertOnError: true
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090

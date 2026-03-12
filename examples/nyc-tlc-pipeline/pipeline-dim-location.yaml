@@ -1,0 +1,49 @@
+# ════════════════════════════════════════════════════════════
+# Dimension: dim_location (official NYC TLC Taxi Zone Lookup)
+# Target: Snowflake ANALYTICS.DW.DIM_LOCATION
+# Source: https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: dim-location
+  description: "Build location dimension from official NYC TLC Taxi Zone Lookup Table"
+  owner: data-team
+  labels:
+    domain: transportation
+    stage: dimension
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      query: >
+        SELECT
+          CAST("LocationID" AS INTEGER) AS location_id,
+          "Zone" AS zone_name,
+          "Borough" AS borough,
+          "service_zone" AS service_zone
+        FROM read_csv_auto('https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv')
+        ORDER BY location_id
+
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: DW
+    table: DIM_LOCATION
+    flatten: true
+    config:
+      vault_path: secret/data/mako/snowflake
+    batch:
+      size: 500
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9090

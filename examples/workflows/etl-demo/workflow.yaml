@@ -1,0 +1,26 @@
+# Mako Workflow Specification
+# Docs: https://github.com/Stefen-Taime/mako
+#
+# A workflow is a DAG of pipelines. Steps are executed in dependency order:
+# steps with no dependencies start immediately (in parallel if multiple),
+# and downstream steps are triggered when their dependencies complete.
+apiVersion: mako/v1
+kind: Workflow
+
+workflow:
+  name: etl-daily
+  description: "Full ETL: ingest raw data → transform → load to warehouse"
+  owner: data-team
+  onFailure: stop
+
+  steps:
+    - name: ingest
+      pipeline: ../duckdb/pipeline-parquet-to-duckdb.yaml
+
+    - name: transform
+      pipeline: ../simple/pipeline.yaml
+      depends_on: [ingest]
+
+    - name: load
+      pipeline: ../snowflake/pipeline-users.yaml
+      depends_on: [transform]

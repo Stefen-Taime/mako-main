@@ -1,0 +1,38 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: Movies -> Snowflake
+# Source: open-source-data (GitHub raw URL)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: movies-to-snowflake
+  description: "Ingest movies data from GitHub and load to Snowflake"
+  owner: data-team
+
+  source:
+    type: file
+    config:
+      path: https://raw.githubusercontent.com/Stefen-Taime/open-source-data/main/movies/json/json_bank_20240116_1.json
+      format: json
+
+  transforms:
+    - name: filter_popular
+      type: filter
+      condition: "popularity > 0.5"
+
+    - name: drop_internal
+      type: drop_fields
+      fields: [user_id]
+
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: RAW
+    table: MOVIES
+    flatten: true
+    config:
+      account: REPLACE_WITH_YOUR_ACCOUNT
+      user: REPLACE_WITH_YOUR_USER
+      warehouse: COMPUTE_WH
+      role: ACCOUNTADMIN

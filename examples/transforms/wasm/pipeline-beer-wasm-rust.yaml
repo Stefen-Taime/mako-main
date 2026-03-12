@@ -1,0 +1,49 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: Beer API -> Rust WASM Plugin -> PostgreSQL
+# Tests the Rust WASM plugin transform (adds _enriched, _plugin_lang)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: beer-wasm-rust
+  description: "Beer data enriched by Rust WASM plugin"
+  owner: data-team
+
+  source:
+    type: http
+    config:
+      url: http://localhost:8000/beer/
+      method: GET
+      auth_type: none
+      response_type: json
+      data_path: data
+      pagination_type: offset
+      pagination_limit_param: limit
+      pagination_limit: 100
+      pagination_offset_param: skip
+      pagination_total_path: total
+      rate_limit_rps: 10
+      timeout: 30s
+
+  transforms:
+    - name: rust_enrich
+      type: plugin
+      config:
+        path: /Users/stefen/mako-test/examples/wasm-plugin-rust/plugin.wasm
+
+  sink:
+    type: postgres
+    database: mako
+    schema: public
+    table: beer_wasm_rust
+    flatten: true
+    batch:
+      size: 200
+      interval: 5s
+
+  monitoring:
+    freshnessSLA: 5m
+    metrics:
+      enabled: true
+      port: 9090

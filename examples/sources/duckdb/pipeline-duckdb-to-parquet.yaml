@@ -1,0 +1,19 @@
+apiVersion: mako/v1
+kind: Pipeline
+pipeline:
+  name: duckdb-export-parquet
+  description: "Read from DuckDB and export to partitioned Parquet"
+  source:
+    type: duckdb
+    config:
+      database: /data/analytics.duckdb
+      query: "SELECT *, year(created_at) as year, month(created_at) as month FROM events"
+  sink:
+    type: duckdb
+    database: ":memory:"
+    table: export_staging
+    config:
+      create_table: true
+      export_path: /data/output/events/
+      export_format: parquet
+      export_partition_by: [year, month]

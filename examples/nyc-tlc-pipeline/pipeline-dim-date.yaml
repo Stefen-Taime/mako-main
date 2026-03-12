@@ -1,0 +1,60 @@
+# ════════════════════════════════════════════════════════════
+# Dimension: dim_date (366 rows - 2024 calendar)
+# Target: Snowflake ANALYTICS.DW.DIM_DATE
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: dim-date
+  description: "Build date dimension table (2024 calendar) in Snowflake"
+  owner: data-team
+  labels:
+    domain: transportation
+    stage: dimension
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      query: >
+        WITH dates AS (
+          SELECT UNNEST(generate_series(
+            DATE '2024-01-01', DATE '2024-12-31', INTERVAL '1 day'
+          )) AS full_date
+        )
+        SELECT
+          CAST(STRFTIME(full_date, '%Y%m%d') AS INTEGER) AS date_key,
+          CAST(full_date AS VARCHAR)                      AS full_date,
+          YEAR(full_date)                                 AS year,
+          MONTH(full_date)                                AS month,
+          DAY(full_date)                                  AS day,
+          DAYOFWEEK(full_date)                            AS day_of_week,
+          DAYNAME(full_date)                              AS day_name,
+          MONTHNAME(full_date)                            AS month_name,
+          QUARTER(full_date)                              AS quarter,
+          WEEKOFYEAR(full_date)                           AS week_of_year,
+          CASE WHEN DAYOFWEEK(full_date) IN (0, 6)
+               THEN 1 ELSE 0 END                         AS is_weekend
+        FROM dates
+
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: DW
+    table: DIM_DATE
+    flatten: true
+    config:
+      vault_path: secret/data/mako/snowflake
+    batch:
+      size: 500
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9090

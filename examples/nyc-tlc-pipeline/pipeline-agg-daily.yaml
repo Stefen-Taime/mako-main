@@ -1,0 +1,104 @@
+# ════════════════════════════════════════════════════════════
+# Aggregation: AGG_DAILY_SUMMARY
+# Reads raw Parquet data from GCS, computes
+# pre-aggregated daily metrics, writes to Snowflake.
+#
+# Vault secrets:
+#   - Snowflake: secret/data/mako/snowflake
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: agg-daily-summary
+  description: "Build pre-aggregated daily trip summary from raw Parquet data"
+  owner: data-team
+  labels:
+    domain: transportation
+    stage: aggregation
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      vault_path: secret/data/mako/gcs
+      query: >
+        WITH trips AS (
+          SELECT
+            CAST(STRFTIME(make_timestamp(tpep_pickup_datetime), '%Y%m%d') AS INTEGER) AS pickup_date_key,
+            CAST(make_timestamp(tpep_pickup_datetime) AS DATE) AS pickup_date,
+            CAST(COALESCE(passenger_count, 1) AS INTEGER) AS passenger_count,
+            ROUND(trip_distance, 2) AS trip_distance,
+            ROUND(fare_amount, 2) AS fare_amount,
+            ROUND(COALESCE(tip_amount, 0), 2) AS tip_amount,
+            ROUND(total_amount, 2) AS total_amount,
+            ROUND(COALESCE(congestion_surcharge, 0), 2) AS congestion_surcharge,
+            ROUND(COALESCE(Airport_fee, 0), 2) AS airport_fee,
+            0.00 AS cbd_congestion_fee,
+            CASE WHEN trip_distance > 0
+                 THEN ROUND(total_amount / trip_distance, 2)
+                 ELSE 0 END AS cost_per_mile,
+            ROUND((tpep_dropoff_datetime - tpep_pickup_datetime) / 60000000.0, 1) AS trip_duration_minutes,
+            CASE
+              WHEN trip_distance > 20 THEN 'long_haul'
+              WHEN trip_distance > 5  THEN 'medium'
+              ELSE 'short'
+            END AS trip_category
+          FROM read_parquet('gs://mako-pipeline-data/raw/nyc_tlc/yellow/2024/01/**/*.parquet', union_by_name=True)
+          WHERE tpep_pickup_datetime IS NOT NULL
+            AND tpep_dropoff_datetime IS NOT NULL
+            AND total_amount >= 0
+            AND trip_distance >= 0
+          LIMIT 5000
+        )
+        SELECT
+          t.pickup_date_key,
+          CAST(t.pickup_date AS VARCHAR) AS full_date,
+          DAYNAME(t.pickup_date) AS day_name,
+          CASE WHEN DAYOFWEEK(t.pickup_date) IN (0, 6) THEN 1 ELSE 0 END AS is_weekend,
+          COUNT(*) AS total_trips,
+          SUM(t.passenger_count) AS total_passengers,
+          ROUND(AVG(t.passenger_count), 2) AS avg_passengers,
+          ROUND(SUM(t.total_amount), 2) AS total_revenue,
+          ROUND(AVG(t.total_amount), 2) AS avg_fare,
+          ROUND(SUM(t.tip_amount), 2) AS total_tips,
+          ROUND(AVG(t.tip_amount), 2) AS avg_tip,
+          ROUND(AVG(CASE WHEN t.fare_amount > 0
+                         THEN t.tip_amount / t.fare_amount * 100
+                         ELSE 0 END), 2) AS avg_tip_pct,
+          ROUND(AVG(t.trip_distance), 2) AS avg_distance,
+          ROUND(AVG(t.trip_duration_minutes), 1) AS avg_duration_minutes,
+          ROUND(AVG(t.cost_per_mile), 2) AS avg_cost_per_mile,
+          ROUND(SUM(t.congestion_surcharge), 2) AS total_congestion_fees,
+          ROUND(SUM(t.airport_fee), 2) AS total_airport_fees,
+          ROUND(SUM(t.cbd_congestion_fee), 2) AS total_cbd_congestion_fees,
+          SUM(CASE WHEN t.trip_category = 'short' THEN 1 ELSE 0 END) AS short_trips,
+          SUM(CASE WHEN t.trip_category = 'medium' THEN 1 ELSE 0 END) AS medium_trips,
+          SUM(CASE WHEN t.trip_category = 'long_haul' THEN 1 ELSE 0 END) AS long_trips
+        FROM trips t
+        GROUP BY t.pickup_date_key, t.pickup_date
+        ORDER BY t.pickup_date
+      batch_size: 1000
+
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: DW
+    table: AGG_DAILY_SUMMARY
+    flatten: true
+    config:
+      vault_path: secret/data/mako/snowflake
+    batch:
+      size: 500
+      interval: 5s
+
+  monitoring:
+    alertOnError: true
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090

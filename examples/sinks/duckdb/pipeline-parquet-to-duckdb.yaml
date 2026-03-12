@@ -1,0 +1,16 @@
+apiVersion: mako/v1
+kind: Pipeline
+pipeline:
+  name: parquet-to-duckdb
+  description: "Read Parquet files and load into DuckDB"
+  source:
+    type: duckdb
+    config:
+      query: "SELECT * FROM read_parquet('/data/*.parquet')"
+      batch_size: 10000
+  sink:
+    type: duckdb
+    database: /data/analytics.duckdb
+    table: events
+    config:
+      create_table: true

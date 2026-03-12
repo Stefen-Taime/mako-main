@@ -1,0 +1,50 @@
+# ════════════════════════════════════════════════════════════
+# Dimension: dim_date (366 rows — 2024 calendar)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: dim-date
+  description: "Build date dimension table (2024 calendar)"
+  owner: data-team
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      query: >
+        WITH dates AS (
+          SELECT UNNEST(generate_series(
+            DATE '2024-01-01', DATE '2024-12-31', INTERVAL '1 day'
+          )) AS full_date
+        )
+        SELECT
+          CAST(STRFTIME(full_date, '%Y%m%d') AS INTEGER) AS date_key,
+          CAST(full_date AS VARCHAR)                      AS full_date,
+          YEAR(full_date)                                 AS year,
+          MONTH(full_date)                                AS month,
+          DAY(full_date)                                  AS day,
+          DAYOFWEEK(full_date)                            AS day_of_week,
+          DAYNAME(full_date)                              AS day_name,
+          MONTHNAME(full_date)                            AS month_name,
+          QUARTER(full_date)                              AS quarter,
+          WEEKOFYEAR(full_date)                           AS week_of_year,
+          CASE WHEN DAYOFWEEK(full_date) IN (0, 6)
+               THEN 1 ELSE 0 END                         AS is_weekend
+        FROM dates
+
+  sink:
+    type: duckdb
+    database: /tmp/nyc_tlc_warehouse.duckdb
+    table: dim_date
+    config:
+      create_table: true
+    batch:
+      size: 500
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9113

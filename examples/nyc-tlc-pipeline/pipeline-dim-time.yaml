@@ -1,0 +1,56 @@
+# ════════════════════════════════════════════════════════════
+# Dimension: dim_time (24 rows - hours of day)
+# Target: Snowflake ANALYTICS.DW.DIM_TIME
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: dim-time
+  description: "Build time-of-day dimension table (24 hours) in Snowflake"
+  owner: data-team
+  labels:
+    domain: transportation
+    stage: dimension
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      query: >
+        SELECT
+          h AS hour_key,
+          h AS hour_of_day,
+          CASE
+            WHEN h BETWEEN 6 AND 9   THEN 'Morning Rush'
+            WHEN h BETWEEN 10 AND 15 THEN 'Midday'
+            WHEN h BETWEEN 16 AND 19 THEN 'Evening Rush'
+            WHEN h BETWEEN 20 AND 23 THEN 'Night'
+            ELSE 'Late Night'
+          END AS time_period,
+          CASE
+            WHEN h BETWEEN 7 AND 9 OR h BETWEEN 16 AND 19
+            THEN 1 ELSE 0
+          END AS is_rush_hour
+        FROM generate_series(0, 23) AS t(h)
+
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: DW
+    table: DIM_TIME
+    flatten: true
+    config:
+      vault_path: secret/data/mako/snowflake
+    batch:
+      size: 100
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9090

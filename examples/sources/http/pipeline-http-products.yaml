@@ -1,0 +1,49 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: DummyJSON Products API -> PostgreSQL
+# Source: HTTP API with offset pagination
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: products-api-to-postgres
+  description: "Fetch products from DummyJSON API with pagination and load to PostgreSQL"
+  owner: data-team
+
+  source:
+    type: http
+    config:
+      url: https://dummyjson.com/products
+      method: GET
+      auth_type: none
+      response_type: json
+      data_path: products
+      pagination_type: offset
+      pagination_limit_param: limit
+      pagination_limit: 30
+      pagination_offset_param: skip
+      pagination_total_path: total
+      rate_limit_rps: 5
+      timeout: 30s
+      max_retries: 3
+
+  transforms:
+    - name: drop_heavy
+      type: drop_fields
+      fields: [images, thumbnail, meta]
+
+  sink:
+    type: postgres
+    database: mako
+    schema: public
+    table: products
+    flatten: true
+    batch:
+      size: 100
+      interval: 5s
+
+  monitoring:
+    freshnessSLA: 5m
+    metrics:
+      enabled: true
+      port: 9090

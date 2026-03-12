@@ -1,0 +1,36 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: Stripe Payments -> PostgreSQL
+# Source: open-source-data (GitHub raw URL)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: stripe-to-postgres
+  description: "Ingest Stripe payment data from GitHub with card masking and load to PostgreSQL"
+  owner: data-team
+
+  source:
+    type: file
+    config:
+      path: https://raw.githubusercontent.com/Stefen-Taime/open-source-data/main/stripe/json/json_bank_20240116_1.json
+      format: json
+
+  transforms:
+    - name: mask_cards
+      type: hash_fields
+      fields: [valid_card, invalid_card, ccv, ccv_amex]
+
+    - name: drop_internal
+      type: drop_fields
+      fields: [dt_current_timestamp]
+
+  sink:
+    type: postgres
+    database: mako
+    schema: public
+    table: stripe_flat
+    flatten: true
+    batch:
+      size: 500
+      interval: 5s

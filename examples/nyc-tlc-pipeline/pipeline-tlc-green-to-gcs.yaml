@@ -1,0 +1,78 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: NYC TLC Green Taxi -> GCS (Parquet)
+# EXTRACT: Download raw Green Taxi Parquet from NYC TLC
+#          and store in GCS with data quality checks.
+#
+# Green taxi uses lpep_ prefix (not tpep_) and has
+# ehail_fee + trip_type columns instead of Airport_fee.
+#
+# Vault secrets:
+#   - GCS: secret/data/mako/gcs (bucket, project)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: tlc-green-to-gcs-raw
+  description: "Ingest NYC TLC Green Taxi trip data (Parquet) into GCS"
+  owner: data-team
+  labels:
+    domain: transportation
+    dataset: nyc-tlc
+    taxi_type: green
+    stage: extract
+
+  vault:
+    path: secret/data/mako
+    ttl: 5m
+
+  source:
+    type: file
+    config:
+      path: https://d37ci6vzurychx.cloudfront.net/trip-data/green_tripdata_2024-01.parquet
+      format: parquet
+      channel_buffer: 20000
+
+  transforms:
+    - name: quality-gate
+      type: dq_check
+      on_failure: drop
+      checks:
+        - column: VendorID
+          rule: not_null
+        - column: lpep_pickup_datetime
+          rule: not_null
+        - column: trip_distance
+          rule: range
+          min: 0
+        - column: total_amount
+          rule: range
+          min: 0
+        - column: passenger_count
+          rule: range
+          min: 0
+          max: 9
+
+    - name: enrich-fare-category
+      type: sql
+      query: "SELECT *, CASE WHEN total_amount > '50' THEN 'premium' WHEN total_amount > '20' THEN 'standard' ELSE 'economy' END as fare_category FROM events"
+
+  sink:
+    type: gcs
+    bucket: mako-pipeline-data
+    prefix: raw/nyc_tlc/green/2024/01
+    format: parquet
+    config:
+      vault_path: secret/data/mako/gcs
+      compression: snappy
+    batch:
+      size: 5000
+      interval: 10s
+
+  monitoring:
+    freshnessSLA: 10m
+    alertOnError: true
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090

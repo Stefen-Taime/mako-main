@@ -1,0 +1,56 @@
+# ════════════════════════════════════════════════════════════
+# Dimension: dim_location (TLC taxi zone IDs from raw data)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: dim-location
+  description: "Build location dimension from distinct pickup/dropoff IDs"
+  owner: data-team
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      query: >
+        WITH all_locs AS (
+          SELECT DISTINCT PULocationID AS location_id
+          FROM read_parquet('/tmp/nyc_tlc_parquet/*.parquet', union_by_name=True)
+          WHERE PULocationID IS NOT NULL
+          UNION
+          SELECT DISTINCT DOLocationID
+          FROM read_parquet('/tmp/nyc_tlc_parquet/*.parquet', union_by_name=True)
+          WHERE DOLocationID IS NOT NULL
+        )
+        SELECT
+          CAST(location_id AS INTEGER) AS location_id,
+          'Zone ' || CAST(location_id AS VARCHAR) AS zone_name,
+          CASE
+            WHEN location_id = 1   THEN 'EWR (Newark Airport)'
+            WHEN location_id = 132 THEN 'JFK Airport'
+            WHEN location_id = 138 THEN 'LaGuardia Airport'
+            WHEN location_id BETWEEN 4 AND 12   THEN 'Bronx'
+            WHEN location_id BETWEEN 13 AND 85  THEN 'Manhattan'
+            WHEN location_id BETWEEN 61 AND 150 THEN 'Brooklyn'
+            WHEN location_id BETWEEN 151 AND 210 THEN 'Queens'
+            WHEN location_id BETWEEN 211 AND 263 THEN 'Staten Island/Other'
+            ELSE 'Unknown'
+          END AS borough
+        FROM all_locs
+        ORDER BY location_id
+
+  sink:
+    type: duckdb
+    database: /tmp/nyc_tlc_warehouse.duckdb
+    table: dim_location
+    config:
+      create_table: true
+    batch:
+      size: 500
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9115

@@ -1,0 +1,39 @@
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: wasm-enrichment
+  owner: examples
+  description: Pipeline using a WASM plugin transform
+
+  source:
+    type: kafka
+    topic: events.orders
+    brokers: localhost:9092
+    startOffset: earliest
+
+  transforms:
+    # Built-in: hash PII fields
+    - name: pii_hash
+      type: hash_fields
+      fields: [email, phone]
+
+    # WASM plugin: custom enrichment
+    - name: enrich
+      type: plugin
+      config:
+        path: ./examples/wasm-plugin/plugin.wasm
+        # function: transform   # default
+
+    # Built-in: filter production events only
+    - name: prod_only
+      type: filter
+      condition: "environment = production"
+
+  sink:
+    type: stdout
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9090

@@ -1,0 +1,53 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: Beer API -> Schema Validation -> PostgreSQL
+# Tests schema enforcement via Confluent Schema Registry
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: beer-schema-validated
+  description: "Beer data with JSON Schema enforcement"
+  owner: data-team
+
+  source:
+    type: http
+    config:
+      url: http://localhost:8000/beer/
+      method: GET
+      auth_type: none
+      response_type: json
+      data_path: data
+      pagination_type: offset
+      pagination_limit_param: limit
+      pagination_limit: 100
+      pagination_offset_param: skip
+      pagination_total_path: total
+      rate_limit_rps: 10
+      timeout: 30s
+
+  schema:
+    enforce: true
+    registry: http://localhost:8081
+    subject: beer-value
+    compatibility: BACKWARD
+    onFailure: log
+
+  sink:
+    type: postgres
+    database: mako
+    schema: public
+    table: beer_schema_validated
+    flatten: true
+    batch:
+      size: 200
+      interval: 5s
+
+  monitoring:
+    freshnessSLA: 5m
+    alertChannel: "#general"
+    slackWebhookURL: ${SLACK_WEBHOOK_URL}
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090

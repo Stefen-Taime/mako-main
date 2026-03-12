@@ -1,0 +1,38 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: DuckDB -> Parquet (local export)
+# Source: DuckDB (read beer table from /tmp/beer.duckdb)
+# Sink: DuckDB in-memory with COPY TO Parquet export
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: duckdb-to-parquet
+  description: "Read beer from DuckDB and export to Parquet"
+  owner: data-team
+
+  source:
+    type: duckdb
+    config:
+      database: /tmp/beer.duckdb
+      query: "SELECT alcohol, blg, brand, hop, ibu, malts, name, style, user_id, yeast, CASE WHEN alcohol LIKE '%9%' OR alcohol LIKE '%8%' THEN 'strong' ELSE 'normal' END as strength FROM beer"
+      batch_size: 500
+
+  sink:
+    type: duckdb
+    database: ":memory:"
+    table: beer_export
+    config:
+      create_table: true
+      export_path: /tmp/beer_export/
+      export_format: parquet
+      export_partition_by: [strength]
+    batch:
+      size: 500
+      interval: 5s
+
+  monitoring:
+    freshnessSLA: 5m
+    metrics:
+      enabled: true
+      port: 9091

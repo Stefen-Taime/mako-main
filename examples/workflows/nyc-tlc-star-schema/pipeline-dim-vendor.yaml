@@ -1,0 +1,34 @@
+# ════════════════════════════════════════════════════════════
+# Dimension: dim_vendor (3 rows — static reference data)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: dim-vendor
+  description: "Build vendor dimension table"
+  owner: data-team
+
+  source:
+    type: duckdb
+    config:
+      database: ":memory:"
+      query: >
+        SELECT 1 AS vendor_id, 'Creative Mobile Technologies' AS vendor_name
+        UNION ALL SELECT 2, 'VeriFone Inc.'
+        UNION ALL SELECT 6, 'Myle Technologies'
+
+  sink:
+    type: duckdb
+    database: /tmp/nyc_tlc_warehouse.duckdb
+    table: dim_vendor
+    config:
+      create_table: true
+    batch:
+      size: 100
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9110

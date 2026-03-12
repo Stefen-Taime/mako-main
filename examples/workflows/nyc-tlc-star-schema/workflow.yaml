@@ -1,0 +1,81 @@
+# ════════════════════════════════════════════════════════════
+# Workflow: NYC TLC Star Schema Builder
+# ════════════════════════════════════════════════════════════
+#
+# DAG structure (sequential dims to avoid DuckDB write conflicts):
+#
+#   dim-vendor → dim-payment → dim-rate-code → dim-date → dim-time → dim-location
+#                                                                         │
+#                                                                         ▼
+#                                                                    fact-trips
+#                                                                         │
+#                                                                         ▼
+#                                                                    agg-daily
+#                                                                         │
+#                                                                         ▼
+#                                                                   quality-gate
+#
+# Output: /tmp/nyc_tlc_warehouse.duckdb
+#
+apiVersion: mako/v1
+kind: Workflow
+
+workflow:
+  name: nyc-tlc-star-schema
+  description: "Build dimensional model (star schema) from raw NYC TLC Parquet data"
+  owner: data-team
+  onFailure: stop
+
+  steps:
+    # ── Dimensions (sequential — DuckDB single-writer constraint) ──
+    - name: dim-vendor
+      pipeline: pipeline-dim-vendor.yaml
+
+    - name: dim-payment
+      pipeline: pipeline-dim-payment.yaml
+      depends_on: [dim-vendor]
+
+    - name: dim-rate-code
+      pipeline: pipeline-dim-rate-code.yaml
+      depends_on: [dim-payment]
+
+    - name: dim-date
+      pipeline: pipeline-dim-date.yaml
+      depends_on: [dim-rate-code]
+
+    - name: dim-time
+      pipeline: pipeline-dim-time.yaml
+      depends_on: [dim-date]
+
+    - name: dim-location
+      pipeline: pipeline-dim-location.yaml
+      depends_on: [dim-time]
+
+    # ── Fact table (waits for all dimensions) ──
+    - name: fact-trips
+      pipeline: pipeline-fact-trips.yaml
+      depends_on: [dim-location]
+
+    # ── Aggregation (waits for fact table) ──
+    - name: agg-daily
+      pipeline: pipeline-agg-daily.yaml
+      depends_on: [fact-trips]
+
+    # ── Quality gate: SQL assertions on final warehouse ──
+    - name: warehouse-quality-gate
+      type: quality_gate
+      database: /tmp/nyc_tlc_warehouse.duckdb
+      depends_on: [agg-daily]
+      checks:
+        - name: "fact_trips has data"
+          sql: "SELECT COUNT(*) FROM fact_trips"
+          expect: "> 100000"
+        - name: "all dimensions populated"
+          sql: "SELECT MIN(cnt) FROM (SELECT COUNT(*) cnt FROM dim_vendor UNION ALL SELECT COUNT(*) FROM dim_date UNION ALL SELECT COUNT(*) FROM dim_time UNION ALL SELECT COUNT(*) FROM dim_location UNION ALL SELECT COUNT(*) FROM dim_payment_type UNION ALL SELECT COUNT(*) FROM dim_rate_code)"
+          expect: "> 0"
+        - name: "agg_daily_summary has data"
+          sql: "SELECT COUNT(*) FROM agg_daily_summary"
+          expect: "> 0"
+        - name: "no negative revenue in aggregation"
+          sql: "SELECT COUNT(*) FROM agg_daily_summary WHERE total_revenue < 0"
+          expect: "= 0"

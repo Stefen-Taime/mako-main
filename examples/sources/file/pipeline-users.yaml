@@ -1,0 +1,36 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: Users -> PostgreSQL
+# Source: open-source-data (GitHub raw URL)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: users-to-postgres
+  description: "Ingest users data from GitHub with PII masking and load to PostgreSQL"
+  owner: data-team
+
+  source:
+    type: file
+    config:
+      path: https://raw.githubusercontent.com/Stefen-Taime/open-source-data/main/user/json/users.json
+      format: json
+
+  transforms:
+    - name: pii_hash
+      type: hash_fields
+      fields: [email, password, social_insurance_number, phone_number]
+
+    - name: drop_sensitive
+      type: drop_fields
+      fields: [avatar]
+
+  sink:
+    type: postgres
+    database: mako
+    schema: public
+    table: users_flat
+    flatten: true
+    batch:
+      size: 500
+      interval: 5s

@@ -1,0 +1,61 @@
+# ════════════════════════════════════════════════════════════
+# Aggregation: agg_daily_summary
+# Pre-aggregated daily metrics for fast dashboard queries
+# Depends on: fact_trips + dim_date (must run after them)
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: agg-daily-summary
+  description: "Build pre-aggregated daily trip summary from fact_trips"
+  owner: data-team
+
+  source:
+    type: duckdb
+    config:
+      database: /tmp/nyc_tlc_warehouse.duckdb
+      query: >
+        SELECT
+          f.pickup_date_key,
+          d.full_date,
+          d.day_name,
+          d.is_weekend,
+          COUNT(*)                                        AS total_trips,
+          SUM(f.passenger_count)                          AS total_passengers,
+          ROUND(AVG(f.passenger_count), 2)                AS avg_passengers,
+          ROUND(SUM(f.total_amount), 2)                   AS total_revenue,
+          ROUND(AVG(f.total_amount), 2)                   AS avg_fare,
+          ROUND(SUM(f.tip_amount), 2)                     AS total_tips,
+          ROUND(AVG(f.tip_amount), 2)                     AS avg_tip,
+          ROUND(AVG(CASE WHEN f.fare_amount > 0
+                         THEN f.tip_amount / f.fare_amount * 100
+                         ELSE 0 END), 2)                  AS avg_tip_pct,
+          ROUND(AVG(f.trip_distance), 2)                  AS avg_distance,
+          ROUND(AVG(f.trip_duration_minutes), 1)          AS avg_duration_minutes,
+          ROUND(AVG(f.cost_per_mile), 2)                  AS avg_cost_per_mile,
+          ROUND(SUM(f.congestion_surcharge), 2)           AS total_congestion_fees,
+          ROUND(SUM(f.airport_fee), 2)                    AS total_airport_fees,
+          SUM(CASE WHEN f.trip_category = 'short' THEN 1 ELSE 0 END)     AS short_trips,
+          SUM(CASE WHEN f.trip_category = 'medium' THEN 1 ELSE 0 END)    AS medium_trips,
+          SUM(CASE WHEN f.trip_category = 'long_haul' THEN 1 ELSE 0 END) AS long_trips
+        FROM fact_trips f
+        JOIN dim_date d ON f.pickup_date_key = d.date_key
+        GROUP BY f.pickup_date_key, d.full_date, d.day_name, d.is_weekend
+        ORDER BY d.full_date
+      batch_size: 1000
+
+  sink:
+    type: duckdb
+    database: /tmp/nyc_tlc_warehouse.duckdb
+    table: agg_daily_summary
+    config:
+      create_table: true
+    batch:
+      size: 500
+      interval: 5s
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9102

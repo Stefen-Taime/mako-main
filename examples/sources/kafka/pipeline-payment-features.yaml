@@ -1,0 +1,151 @@
+# ════════════════════════════════════════════════════════════
+# Advanced Pipeline — Payment Events with Feature Engineering
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: payment-features
+  description: "Real-time payment feature engineering for fraud detection"
+  owner: fraud-team
+  labels:
+    domain: finance
+    tier: critical
+    compliance: pci-dss
+
+  source:
+    type: kafka
+    topic: events.payments
+    brokers: ${KAFKA_BROKERS:-kafka:9092}
+    schema: protobuf://schemas/payment.proto
+
+  transforms:
+    # Step 1: PII governance (Autodesk pattern)
+    - name: pii_hash
+      type: hash_fields
+      fields: [email, phone, credit_card_number, ssn]
+
+    # Step 2: Mask partial (show last 4 of card)
+    - name: card_mask
+      type: mask_fields
+      fields: [credit_card_display]
+
+    # Step 3: Rename for warehouse convention
+    - name: standardize
+      type: rename_fields
+      mapping:
+        amt: amount
+        ts: event_timestamp
+        cust_id: customer_id
+
+    # Step 4: Type casting
+    - name: types
+      type: cast_fields
+      mapping:
+        amount: float
+        risk_score: float
+        customer_id: string
+
+    # Step 5: Enrich with SQL
+    - name: enrich
+      type: sql
+      query: "SELECT *, amount * 1.15 as amount_with_tax, CASE WHEN risk_score > 0.8 THEN 'high' WHEN risk_score > 0.5 THEN 'medium' ELSE 'low' END as risk_category FROM events"
+
+    # Step 6: Filter high-value only (for this pipeline)
+    - name: high_value_only
+      type: filter
+      condition: "amount > 100"
+
+    # Step 7: Deduplication
+    - name: dedupe
+      type: deduplicate
+      fields: [event_id]
+
+    # Step 8: Real-time aggregation
+    - name: hourly_spend
+      type: aggregate
+      window:
+        type: tumbling
+        size: 1h
+        groupBy: [customer_id]
+        function: sum
+        field: amount
+        output: hourly_total_spend
+
+  # Multi-sink: warehouse + feature store + monitoring
+  sink:
+    type: snowflake
+    database: ANALYTICS
+    schema: FINANCE
+    table: PAYMENT_EVENTS
+    batch:
+      size: 5000
+      interval: 30s
+
+  sinks:
+    - name: bigquery-mirror
+      type: bigquery
+      schema: domain_finance
+      table: payment_events
+      config:
+        project: ${GCP_PROJECT}
+      batch:
+        size: 2000
+        interval: 15s
+
+    - name: feature-store
+      type: gcs
+      bucket: ${GCS_BUCKET:-ml-features}
+      prefix: features/payments/
+      format: parquet
+      batch:
+        size: 10000
+        interval: 60s
+
+  schema:
+    enforce: true
+    registry: ${SCHEMA_REGISTRY:-http://schema-registry:8081}
+    compatibility: BACKWARD
+    onFailure: dlq
+    dlqTopic: events.payments.dlq
+
+  isolation:
+    strategy: dedicated
+    maxRetries: 5
+    backoffMs: 2000
+    dlqEnabled: true
+
+  monitoring:
+    freshnessSLA: 2m
+    alertChannel: "#fraud-alerts"
+    slackWebhookURL: ${SLACK_WEBHOOK_URL}
+    alertOnError: true
+    alertOnSLA: true
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090
+    alerts:
+      - name: payment_latency
+        type: latency
+        threshold: 30s
+        severity: critical
+        channel: "#fraud-incidents"
+      - name: high_error_rate
+        type: error_rate
+        threshold: "0.5%"
+        severity: critical
+      - name: volume_drop
+        type: volume
+        threshold: "-50%"
+        severity: warning
+
+  resources:
+    replicas: 3
+    cpu: "1"
+    memory: 1Gi
+    autoscale:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 20
+      targetLag: "5000"

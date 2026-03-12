@@ -1,0 +1,42 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline 1: Users (HTTP JSON) → DuckDB + Parquet export
+# Source: HTTP API (GitHub raw JSON array)
+# Sink:   DuckDB (in-memory) → exports to local Parquet file
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: ingest-users-duckdb
+  description: "Fetch users from HTTP API, hash PII, store in DuckDB + export Parquet"
+  owner: data-team
+
+  source:
+    type: http
+    config:
+      url: https://raw.githubusercontent.com/Stefen-Taime/open-source-data/main/user/json/users.json
+      method: GET
+      response_type: json
+
+  transforms:
+    - name: pii_hash
+      type: hash_fields
+      fields: [email, phone_number, social_insurance_number]
+
+    - name: drop_secrets
+      type: drop_fields
+      fields: [password, credit_card]
+
+  sink:
+    type: duckdb
+    database: /tmp/mako-workflow/users.duckdb
+    table: users
+    config:
+      create_table: true
+      export_path: /tmp/mako-workflow/users.parquet
+      export_format: parquet
+
+  monitoring:
+    metrics:
+      enabled: true
+      port: 9100

@@ -1,0 +1,95 @@
+# ════════════════════════════════════════════════════════════
+# Pipeline: HTTP API -> Schema Registry -> Kafka
+# Source: REST API with pagination
+# Sink: Kafka topic with schema validation and Slack alerts
+# ════════════════════════════════════════════════════════════
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: http-to-kafka
+  description: "Fetch data from HTTP API, validate with schema registry, and publish to Kafka"
+  owner: data-team
+  labels:
+    domain: ingestion
+    tier: standard
+
+  source:
+    type: http
+    config:
+      url: https://api.sampleapis.com/beers/ale
+      method: GET
+      auth_type: none
+      response_type: json
+      rate_limit_rps: 5
+      timeout: 30s
+
+  transforms:
+    # Step 1: Rename fields for Kafka convention
+    - name: standardize
+      type: rename_fields
+      mapping:
+        id: event_id
+        name: beer_name
+        price: unit_price
+
+    # Step 2: Cast types
+    - name: types
+      type: cast_fields
+      mapping:
+        unit_price: string
+        rating.average: float
+        rating.reviews: float
+
+    # Step 3: Drop unnecessary fields
+    - name: cleanup
+      type: drop_fields
+      fields: [image]
+
+  schema:
+    enforce: true
+    registry: ${SCHEMA_REGISTRY:-http://localhost:8081}
+    subject: http-events-value
+    compatibility: BACKWARD
+    onFailure: dlq
+    dlqTopic: http-events.dlq
+
+  isolation:
+    strategy: dedicated
+    maxRetries: 3
+    backoffMs: 1000
+    dlqEnabled: true
+
+  sink:
+    type: kafka
+    topic: http-events
+    config:
+      brokers: ${KAFKA_BROKERS:-localhost:9092}
+    batch:
+      size: 500
+      interval: 10s
+
+  monitoring:
+    freshnessSLA: 5m
+    alertChannel: "#data-alerts"
+    slackWebhookURL: ${SLACK_WEBHOOK_URL}
+    alertOnError: true
+    alertOnSLA: true
+    alertOnComplete: true
+    metrics:
+      enabled: true
+      port: 9090
+    alerts:
+      - name: ingestion_latency
+        type: latency
+        threshold: 60s
+        severity: warning
+      - name: high_error_rate
+        type: error_rate
+        threshold: "1%"
+        severity: critical
+        channel: "#data-incidents"
+      - name: volume_drop
+        type: volume
+        threshold: "-30%"
+        severity: warning
